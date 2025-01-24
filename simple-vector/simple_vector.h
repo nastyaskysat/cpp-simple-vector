@@ -4,6 +4,7 @@
 #include <cassert>
 #include <utility>
 #include <initializer_list>
+#include <algorithm>
 
 #include "array_ptr.h"
 
@@ -34,40 +35,46 @@ public:
 
     SimpleVector() noexcept = default;
 
-    explicit SimpleVector(size_t size) : my_vector(size)
+    explicit SimpleVector(size_t size)
+        : items_(size),
+          size_(size),
+          capacity_(size)
+
     {
-        capacity_ = size;
-        size_ = size;
         std::fill(begin(), end(), Type());
     }
 
-    SimpleVector(size_t size, const Type &value) : my_vector(size)
+    SimpleVector(size_t size, const Type &value)
+        : items_(size),
+          size_(size),
+          capacity_(size)
     {
-        capacity_ = size;
-        size_ = size;
         std::fill(begin(), end(), value);
     }
 
-    SimpleVector(std::initializer_list<Type> init) : my_vector(init.size()), size_(init.size()), capacity_(init.size())
+    SimpleVector(std::initializer_list<Type> init)
+        : items_(init.size()),
+          size_(init.size()),
+          capacity_(init.size())
     {
         if (capacity_ > 0)
         {
-            std::copy(init.begin(), init.end(), my_vector.Get());
+            std::copy(init.begin(), init.end(), items_.Get());
         }
     }
 
     SimpleVector(const SimpleVector &other)
+        : items_(other.GetSize()),
+          size_(other.size_),
+          capacity_(other.capacity_)
+
     {
-        assert(size_ == 0);
-        SimpleVector<Type> cop(other.GetSize());
-        std::copy((other.my_vector).Get(), ((other.my_vector).Get() + other.GetSize()), (cop.my_vector).Get());
-        cop.capacity_ = other.capacity_;
-        swap(cop);
+        std::copy(other.items_.Get(), other.items_.Get() + other.GetSize(), items_.Get());
     }
 
     SimpleVector(SimpleVector &&v) noexcept : size_(std::exchange(v.size_, 0)), capacity_(std::exchange(v.capacity_, 0))
     {
-        my_vector.swap(v.my_vector);
+        items_.swap(v.items_);
     }
 
     SimpleVector(const ReserveProxyObj &obj) : capacity_(obj.GetCapacity())
@@ -82,10 +89,18 @@ public:
     {
         if (this != &rhs)
         {
-            auto rhs_copy(rhs);
-            swap(rhs_copy);
+            if (rhs.size_ == 0)
+            {
+                Clear();
+                size_ = 0;
+                capacity_ = 0;
+            }
+            else
+            {
+                auto rhs_copy(rhs);
+                swap(rhs_copy);
+            }
         }
-
         return *this;
     }
 
@@ -93,14 +108,21 @@ public:
     {
         if (this != &rhs)
         {
-            my_vector.swap(rhs.my_vector);
-            size_ = std::exchange(rhs.size_, 0);
-            capacity_ = std::exchange(rhs.capacity_, 0);
+            if (rhs.size_ == 0)
+            {
+                Clear();
+                size_ = 0;
+                capacity_ = 0;
+            }
+            else
+            {
+                items_.swap(rhs.items_);
+                size_ = std::exchange(rhs.size_, 0);
+                capacity_ = std::exchange(rhs.capacity_, 0);
+            }
         }
-
         return *this;
     }
-
     size_t GetSize() const noexcept
     {
         return size_;
@@ -118,22 +140,22 @@ public:
 
     Type &operator[](size_t index) noexcept
     {
-        return my_vector[index];
+        return items_[index];
     }
 
     const Type &operator[](size_t index) const noexcept
     {
-        return my_vector[index];
+        return items_[index];
     }
 
     Type &At(size_t index)
     {
-        return (index >= size_) ? throw std::out_of_range("index >= size") : my_vector[index];
+        return (index >= size_) ? throw std::out_of_range("index >= size") : items_[index];
     }
 
     const Type &At(size_t index) const
     {
-        return (index >= size_) ? throw std::out_of_range("index >= size") : my_vector[index];
+        return (index >= size_) ? throw std::out_of_range("index >= size") : items_[index];
     }
 
     void Clear() noexcept
@@ -143,103 +165,62 @@ public:
 
     void Resize(size_t new_size)
     {
-        if (new_size <= size_)
+        if (size_ < new_size)
         {
-            size_ = new_size;
+            if (new_size <= capacity_)
+                std::fill(items_.Get() + size_, items_.Get() + new_size, Type());
+            else
+                ReCapacity(new_size * 2);
         }
-        else if (new_size <= capacity_)
-        {
-            for (auto it = begin() + size_; it != begin() + new_size; ++it)
-            {
-                *it = std::move(Type());
-            }
-
-            size_ = new_size;
-        }
-        else
-        {
-            ArrayPtr<Type> temp_v(new_size);
-            for (auto it = temp_v.Get(); it != temp_v.Get() + size_; ++it)
-            {
-                *it = std::move(*(begin() + (it - temp_v.Get())));
-            }
-            for (auto it = temp_v.Get() + size_; it != temp_v.Get() + new_size; ++it)
-            {
-                *it = std::move(Type());
-            }
-            my_vector.swap(temp_v);
-            capacity_ = size_ = new_size;
-        }
+        size_ = new_size;
     }
 
     Iterator begin() noexcept
     {
-        return my_vector.Get();
+        return items_.Get();
     }
 
     Iterator end() noexcept
     {
-        return my_vector.Get() + size_;
+        return items_.Get() + size_;
     }
 
     ConstIterator begin() const noexcept
     {
-        return my_vector.Get();
+        return items_.Get();
     }
 
     ConstIterator end() const noexcept
     {
-        return my_vector.Get() + size_;
+        return items_.Get() + size_;
     }
 
     ConstIterator cbegin() const noexcept
     {
-        return my_vector.Get();
+        return items_.Get();
     }
 
     ConstIterator cend() const noexcept
     {
-        return my_vector.Get() + size_;
+        return items_.Get() + size_;
     }
 
     void PushBack(const Type &item)
     {
-        if (size_ < capacity_)
+        if (size_ >= capacity_)
         {
-            my_vector[size_++] = item;
+            Reserve((capacity_ != 0) ? (2 * capacity_) : 1);
         }
-        else
-        {
-            ArrayPtr<Type> temp_v((capacity_ != 0) ? (2 * capacity_) : 1);
-            std::copy(begin(), end(), temp_v.Get());
-            std::fill(temp_v.Get() + size_, temp_v.Get() + capacity_, Type());
-            temp_v[size_++] = item;
-            my_vector.swap(temp_v);
-            capacity_ = (capacity_ != 0) ? (2 * capacity_) : 1;
-        }
+        items_[size_++] = item;
     }
 
     void PushBack(Type &&item)
     {
-        if (size_ < capacity_)
+        if (size_ >= capacity_)
         {
-            my_vector[size_++] = std::move(item);
+            Reserve((capacity_ != 0) ? (2 * capacity_) : 1);
         }
-        else
-        {
-            ArrayPtr<Type> temp_v((capacity_ != 0) ? (2 * capacity_) : 1);
-            for (size_t i = 0; i < size_; ++i)
-            {
-                temp_v[i] = std::move(my_vector[i]);
-            }
-            for (size_t i = size_; i < capacity_; ++i)
-            {
-                temp_v[i] = std::move(Type());
-            }
-            temp_v[size_++] = std::move(item);
-            my_vector.swap(temp_v);
-            capacity_ = (capacity_ != 0) ? (2 * capacity_) : 1;
-        }
+        items_[size_++] = std::move(item);
     }
 
     Iterator Insert(ConstIterator pos, const Type &value)
@@ -254,17 +235,12 @@ public:
         }
         else
         {
-            auto number = pos - my_vector.Get();
-            ArrayPtr<Type> temp_v((capacity_ != 0) ? (2 * capacity_) : 1);
-
-            std::copy(begin(), end(), temp_v.Get());
-            std::fill(temp_v.Get() + size_, temp_v.Get() + capacity_, Type());
-            std::copy_backward(temp_v.Get() + number, temp_v.Get() + capacity_, temp_v.Get() + capacity_ + 1);
-            temp_v[number] = value;
-            my_vector.swap(temp_v);
+            auto index = pos - cbegin();
+            Reserve(size_ + 1);
+            std::move_backward(items_.Get() + index, items_.Get() + size_, items_.Get() + size_ + 1);
+            items_.Get()[index] = value;
             ++size_;
-            capacity_ = (capacity_ != 0) ? (2 * capacity_) : 1;
-            return Iterator(my_vector.Get() + number);
+            return Iterator(items_.Get() + index);
         }
     }
 
@@ -272,48 +248,26 @@ public:
     {
         if (size_ < capacity_)
         {
-            auto it = Iterator(pos);
-            for (int i = (end() - begin() + 1); i > Iterator(pos) - begin(); --i)
-            {
-                my_vector[i] = std::move(my_vector[i - 1]);
-            }
-            my_vector[it - begin()] = std::move(value);
+            Iterator it = begin() + (pos - cbegin());
+            std::move_backward(it, end(), end() + 1);
+            *it = std::move(value);
             ++size_;
-            return Iterator(pos);
+            return it;
         }
         else
         {
-            auto number = pos - my_vector.Get();
-            ArrayPtr<Type> temp_v((capacity_ != 0) ? (2 * capacity_) : 1);
-            for (size_t i = 0; i < size_; ++i)
-            {
-                temp_v[i] = std::move(my_vector[i]);
-            }
-            for (size_t i = size_; i < capacity_; ++i)
-            {
-                temp_v[i] = std::move(Type());
-            }
-            for (int i = static_cast<int>(capacity_ + 1); i > number; --i)
-            {
-                temp_v[i] = std::move(temp_v[i - 1]);
-            }
-            temp_v[number] = std::move(value);
-            my_vector.swap(temp_v);
+            auto index = pos - cbegin();
+            Reserve(size_ + 1);
+            std::move_backward(items_.Get() + index, items_.Get() + size_, items_.Get() + size_ + 1);
+            items_.Get()[index] = std::move(value);
             ++size_;
-            capacity_ = (capacity_ != 0) ? (2 * capacity_) : 1;
-            return Iterator(my_vector.Get() + number);
+            return Iterator(items_.Get() + index);
         }
-    }
-
-    void PopBack() noexcept
-    {
-        assert(!IsEmpty());
-        size_--;
     }
 
     Iterator Erase(ConstIterator pos)
     {
-        auto aim = std::distance(cbegin(), pos);
+        auto index = std::distance(cbegin(), pos);
         if (pos == begin() + size_)
         {
             size_--;
@@ -322,44 +276,48 @@ public:
         {
             ArrayPtr<Type> temp(size_);
             temp[size_ - 1] = std::move(Type{});
-            //  auto aim = pos - begin();
-            for (auto i = 0; i < aim; ++i)
+            //  auto index = pos - begin();
+            for (auto i = 0; i < index; ++i)
             {
-                temp[i] = std::move(my_vector[i]);
+                temp[i] = std::move(items_[i]);
             }
-            for (auto i = static_cast<int>(size_ - 1); i > aim; --i)
+            for (auto i = static_cast<int>(size_ - 1); i > index; --i)
             {
-                temp[i - 1] = std::move(my_vector[i]);
+                temp[i - 1] = std::move(items_[i]);
             }
-            my_vector.swap(temp);
+            items_.swap(temp);
             size_--;
         }
-        return Iterator(cbegin() + aim);
+        return Iterator(cbegin() + index);
     }
 
     void swap(SimpleVector &other) noexcept
     {
-        my_vector.swap(other.my_vector);
+        items_.swap(other.items_);
         std::swap(other.size_, size_);
         std::swap(other.capacity_, capacity_);
     }
 
     void Reserve(size_t new_capacity)
     {
-        if (capacity_ < new_capacity)
+        if (new_capacity > capacity_)
         {
-            ArrayPtr<Type> temp_v(new_capacity);
-            std::copy(begin(), end(), temp_v.Get());
-            std::fill(temp_v.Get() + size_, temp_v.Get() + new_capacity, Type());
-            my_vector.swap(temp_v);
-            capacity_ = new_capacity;
+            ReCapacity(new_capacity);
         }
     }
 
 private:
-    ArrayPtr<Type> my_vector;
+    ArrayPtr<Type> items_;
     size_t size_ = 0;
     size_t capacity_ = 0;
+
+    void ReCapacity(size_t new_capacity)
+    {
+        ArrayPtr<Type> new_cont_(new_capacity);
+        std::move(items_.Get(), items_.Get() + size_, new_cont_.Get());
+        items_.swap(new_cont_);
+        capacity_ = new_capacity;
+    }
 };
 
 template <typename Type>
